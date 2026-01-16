@@ -198,7 +198,7 @@
   <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
 
   <!-- SheetJS for XLSX export -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
 </head>
 
 <body>
@@ -331,7 +331,7 @@
         <button class="btn" id="runBtn" disabled>Uruchom symulację</button>
         <button class="btn2" id="dlCsvBtn" disabled>Pobierz wyniki (CSV)</button>
         <button class="btn2" id="dlXlsxBtn" disabled>Pobierz wyniki (XLSX)</button>
-        <button class="btn2" id="dlReportBtn" disabled>Generuj raport (HTML)</button>
+        <button class="btn2" id="dlReportBtn" disabled title="Raport HTML wyłączony (wersja demo)">Generuj raport (HTML)</button>
       </div>
 
       <div class="hr"></div>
@@ -508,74 +508,21 @@ let lastResults = null;
 async function initPyodide() {
   try {
     setStatus("Ładowanie Pyodide…", "warn");
+    const indexURL = "https://cdn.jsdelivr.net/pyodide/v0.29.1/full/";
+    const script = document.createElement("script");
+    script.src = indexURL + "pyodide.js";
+    script.async = true;
+    document.head.appendChild(script);
 
-    // Pyodide korzysta z CDN (domyślnie: cdn.jsdelivr.net). W niektórych sieciach (korporacyjnych / publicznych)
-    // ten host bywa blokowany. Dlatego próbujemy kilku równoważnych hostów jsDelivr.
-    const candidates = [
-      "https://cdn.jsdelivr.net/pyodide/v0.25.1/full/",
-      "https://fastly.jsdelivr.net/pyodide/v0.25.1/full/",
-      "https://gcore.jsdelivr.net/pyodide/v0.25.1/full/",
-      "https://testingcf.jsdelivr.net/pyodide/v0.25.1/full/",
-      "https://jsdelivr.b-cdn.net/pyodide/v0.25.1/full/",
-    ];
+    await new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = reject;
+    });
 
-    const attempts = [];
+    pyodide = await loadPyodide({ indexURL });
 
-    async function loadScript(src, timeoutMs = 25000) {
-      return await new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = src;
-        script.async = true;
-
-        const t = setTimeout(() => {
-          script.onload = null;
-          script.onerror = null;
-          reject(new Error(`Timeout podczas ładowania: ${src}`));
-        }, timeoutMs);
-
-        script.onload = () => {
-          clearTimeout(t);
-          resolve();
-        };
-        script.onerror = () => {
-          clearTimeout(t);
-          reject(new Error(`Nie udało się pobrać skryptu: ${src}`));
-        };
-
-        document.head.appendChild(script);
-      });
-    }
-
-    // Spróbuj po kolei różnych hostów.
-    for (const indexURL of candidates) {
-      const host = (() => { try { return new URL(indexURL).hostname; } catch { return indexURL; } })();
-      try {
-        setStatus(`Próba uruchomienia Pyodide z: ${host}`, "warn");
-
-        await loadScript(indexURL + "pyodide.js");
-        if (typeof loadPyodide !== "function") {
-          throw new Error("loadPyodide() nie jest dostępne po załadowaniu pyodide.js");
-        }
-
-        pyodide = await loadPyodide({ indexURL });
-
-        setStatus("Ładowanie pakietów Python (numpy/pandas/scipy)…", "warn");
-        await pyodide.loadPackage(["numpy", "pandas", "scipy"]);
-
-        setStatus(`Pyodide załadowane z: ${host}`, "ok");
-        break;
-      } catch (e) {
-        const msg = (e && e.message) ? e.message : String(e);
-        attempts.push({ indexURL, error: msg });
-        console.warn("Pyodide init failed for", indexURL, e);
-        pyodide = null;
-      }
-    }
-
-    if (!pyodide) {
-      console.error("Nie udało się uruchomić Pyodide. Próby:", attempts);
-      throw new Error("Nie udało się załadować Pyodide z dostępnych źródeł (CDN). Zobacz konsolę (F12) po szczegóły.");
-    }
+    setStatus("Ładowanie pakietów Python (numpy/pandas/scipy)…", "warn");
+    await pyodide.loadPackage(["numpy", "pandas", "scipy"]);
 
     // Write python modules into the virtual FS
     pyodide.FS.writeFile("technologies.py", b64ToUtf8(PY_TECH_B64));
@@ -861,7 +808,7 @@ def run_simulation(params: dict) -> str:
 
   } catch (err) {
     console.error(err);
-    setStatus("Błąd: nie udało się załadować Pyodide. To zwykle oznacza blokadę CDN w sieci. Otwórz konsolę (F12) po szczegóły.", "bad");
+    setStatus("Błąd: nie udało się załadować Pyodide. Sprawdź internet lub polityki sieci.", "bad");
     document.getElementById("runBtn").disabled = true;
   }
 }
@@ -918,7 +865,7 @@ runBtn.addEventListener("click", async () => {
     setStatus("Zakończono. Możesz pobrać wyniki.", "ok");
     document.getElementById("dlCsvBtn").disabled = false;
     document.getElementById("dlXlsxBtn").disabled = false;
-    document.getElementById("dlReportBtn").disabled = false;
+    // // document.getElementById("dlReportBtn").disabled = false; // disabled in this build // (disabled in demo)
 
   } catch (err) {
     console.error(err);
@@ -1209,55 +1156,7 @@ document.getElementById("dlXlsxBtn").addEventListener("click", () => {
 });
 
 document.getElementById("dlReportBtn").addEventListener("click", () => {
-  if (!lastResults) return;
-  const r = lastResults;
-  const report = `
-<!doctype html>
-<html lang="pl">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Raport – elastyczna elektrociepłownia</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding: 20px; color: #0b0f14; }
-    h1 { margin: 0 0 6px 0; font-size: 20px; }
-    .muted { color: #4b5563; font-size: 12px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
-    th, td { border: 1px solid #e5e7eb; padding: 8px 10px; font-size: 12px; text-align: right; }
-    th:first-child, td:first-child { text-align: left; }
-    th { background: #f3f4f6; }
-    pre { background:#f3f4f6; padding:10px; border-radius:10px; overflow:auto; }
-  </style>
-</head>
-<body>
-  <h1>Raport z symulacji – model elastycznej elektrociepłowni</h1>
-  <div class="muted">Okres: ${r.meta.start} – ${r.meta.end} · Liczba godzin: ${r.meta.rows}</div>
-
-  <h2>Wyniki KPI</h2>
-  <table>
-    <thead><tr><th>KPI</th><th>Klasyczny</th><th>Elastyczny</th><th>Delta</th></tr></thead>
-    <tbody>
-      <tr><td>Bilans finansowy (PLN)</td><td>${r.kpi.classic.cost_balance_pln}</td><td>${r.kpi.elastic.cost_balance_pln}</td><td>${r.kpi.delta.cost_balance_pln}</td></tr>
-      <tr><td>Emisje CO₂ (t)</td><td>${r.kpi.classic.emissions_t}</td><td>${r.kpi.elastic.emissions_t}</td><td>${r.kpi.delta.emissions_t}</td></tr>
-      <tr><td>Produkcja energii el. (MWh)</td><td>${r.kpi.classic.eel_mwh}</td><td>${r.kpi.elastic.eel_mwh}</td><td>${r.kpi.delta.eel_mwh}</td></tr>
-      <tr><td>Pokrycie popytu na ciepło</td><td>${r.kpi.classic.heat_cov}</td><td>${r.kpi.elastic.heat_cov}</td><td>${r.kpi.delta.heat_cov}</td></tr>
-      <tr><td>Liczba startów ICE</td><td>${r.kpi.classic.starts_ice}</td><td>${r.kpi.elastic.starts_ice}</td><td>${r.kpi.delta.starts_ice}</td></tr>
-      <tr><td>SOC max (jeśli dotyczy)</td><td>${r.kpi.classic.soc_max}</td><td>${r.kpi.elastic.soc_max}</td><td>${r.kpi.delta.soc_max}</td></tr>
-    </tbody>
-  </table>
-
-  <h2>Podsumowanie</h2>
-  <pre>${r.conclusion}</pre>
-
-  <h2>Parametry wejściowe</h2>
-  <pre>${JSON.stringify(r.params, null, 2)}</pre>
-
-  <div class="muted">Uwaga: raport HTML nie zawiera wykresów (dane do wykresów dostępne w eksporcie CSV/XLSX).</div>
-</body>
-</html>
-  `.trim();
-
-  downloadBlob(new Blob([report], {type:"text/html;charset=utf-8"}), "raport_symulacji.html");
+  alert("Raport HTML chwilowo wyłączony (wersja demo). Pobierz CSV/XLSX.");
 });
 </script>
 
